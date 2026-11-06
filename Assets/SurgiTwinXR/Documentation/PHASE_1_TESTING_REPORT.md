@@ -2,6 +2,16 @@
 
 Date: 2026-11-05. All results below were produced in this session; nothing here was tested on a headset.
 
+> **Phase 1.1 update (2026-11-06).** The §7 plan was carried out on a Meta Quest 3S. Results, defects and fixes
+> are in `PHASE_1_1_HEADSET_VALIDATION.md`. In summary:
+> * **D1:** the app hung on launch because it used the URP template's package name. That name had already been
+>   used by another project on the headset. The package is now `com.bdnaturetech.surgitwinxr`.
+> * **D2:** every export caused a frame hitch. The JSON is now written on a worker thread.
+> * **D3:** the trajectory buffer filled after 13 minutes. It is now sized for 30 minutes.
+>
+> All interaction, camera and performance tests in §7 PASS at 72 Hz. Retrieving the JSON over ADB was blocked by
+> the headset's multi-user storage.
+
 ## 1. Compilation
 
 | Check | Result |
@@ -74,7 +84,7 @@ Install: `adb install -r Builds/Android/SurgiTwinXR_Phase1.apk`, launch *SurgiTw
 | 7 | Touch the pad with an instrument tip | Pad tints orange (contact) / red (≥ 4 mm deep); short haptic pulse |
 | 8 | Pass all 4 rings | Task `COMPLETED`, pad green, patient `TASK_COMPLETED` |
 | 9 | Press **Y** | Task reset, free instruments return to the tray |
-| 10 | Press **B** | Log written; `adb pull /sdcard/Android/data/com.UnityTechnologies.com.unity.template.urpblank/files/SurgiTwinLogs` |
+| 10 | Press **B** | Log line `[SurgiTwin] Session exported: …/Android/data/com.bdnaturetech.surgitwinxr/files/SurgiTwinLogs/ST_….json`; pull with `adb pull /sdcard/Android/data/com.bdnaturetech.surgitwinxr/files/SurgiTwinLogs` (only works when the headset's signed-in user is user 0, see Phase 1.1 report) |
 | 11 | Hand-off: grasp the needle with the grasper while the needle holder holds it | Needle moves to the grasper |
 | 12 | Performance | Check with OVR Metrics Tool: target 72 Hz stable |
 

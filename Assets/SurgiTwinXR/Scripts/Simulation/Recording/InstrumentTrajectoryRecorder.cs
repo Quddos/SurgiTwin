@@ -32,8 +32,9 @@ namespace SurgiTwinXR.Simulation
     public sealed class InstrumentTrajectoryRecorder : MonoBehaviour
     {
         [SerializeField, Range(1f, 90f)] float sampleRateHz = 30f;
-        [Tooltip("Pre-allocated sample capacity. 120 000 samples = ~16 min for 4 instruments at 30 Hz.")]
-        [SerializeField] int capacity = 120000;
+        [Tooltip("Recording length the buffer is sized for. Capacity = minutes x 60 x sampleRateHz x instrument count, "
+                 + "computed when recording starts. Samples beyond it are dropped (with one warning).")]
+        [SerializeField, Min(1f)] float capacityMinutes = 30f;
         [SerializeField] PatientStateController patient;
         [SerializeField] SurgicalTaskController task;
 
@@ -51,15 +52,20 @@ namespace SurgiTwinXR.Simulation
 
         public bool IsRecording => recording;
         public int SampleCount => count;
-        public int Capacity => capacity;
+        public int Capacity => samples != null ? samples.Length : 0;
+        public float CapacityMinutes => capacityMinutes;
         public float SampleRateHz => sampleRateHz;
         public bool Overflowed => overflowWarned;
 
         public void BeginRecording(float sessionStartTime)
         {
-            if (samples == null || samples.Length != capacity)
+            // Phase 1.1 (D3): a fixed 120 000-sample buffer filled after 13 min with the scene's 5 instruments,
+            // so size it from the wanted duration and the instruments actually present.
+            int instrumentCount = Mathf.Max(1, InstrumentController.Active.Count);
+            int needed = Mathf.CeilToInt(capacityMinutes * 60f * sampleRateHz * instrumentCount);
+            if (samples == null || samples.Length < needed)
             {
-                samples = new TrajectorySample[Mathf.Max(1, capacity)];
+                samples = new TrajectorySample[needed];
             }
             count = 0;
             overflowWarned = false;
@@ -110,7 +116,7 @@ namespace SurgiTwinXR.Simulation
                     if (!overflowWarned)
                     {
                         overflowWarned = true;
-                        Debug.LogWarning("[SurgiTwin] Trajectory buffer full; further samples are dropped. Increase capacity.");
+                        Debug.LogWarning("[SurgiTwin] Trajectory buffer full; further samples are dropped. Increase capacityMinutes.");
                     }
                     return;
                 }
@@ -157,36 +163,81 @@ namespace SurgiTwinXR.Simulation
             return idx;
         }
 
-        /// <summary>Writes the "instruments" and "samples" members (with leading comma handling done by caller).</summary>
-        public void WriteJson(TextWriter w)
+        /// <summary>
+        /// Plain-data copy of the recording, safe to serialise off the main thread (no Unity objects).
+        /// Reused between exports so a repeated export does not reallocate the sample array.
+        /// </summary>
+        public sealed class Snapshot
         {
-            JsonText.Key(w, "sampleRateHz"); JsonText.Number(w, sampleRateHz); w.Write(',');
-            JsonText.Key(w, "sampleCount"); JsonText.Number(w, count); w.Write(',');
-            JsonText.Key(w, "bufferOverflow"); JsonText.Bool(w, overflowWarned); w.Write(',');
+            public float sampleRateHz;
+            public int count;
+            public bool overflow;
+            public string[] instrumentIds = new string[0];
+            public string[] instrumentTypes = new string[0];
+            public string[] sourceIds = new string[0];
+            public TrajectorySample[] samples = new TrajectorySample[0];
+        }
+
+        /// <summary>Main thread only: copies the current recording into <paramref name="s"/>.</summary>
+        public void CaptureSnapshot(Snapshot s)
+        {
+            s.sampleRateHz = sampleRateHz;
+            s.count = count;
+            s.overflow = overflowWarned;
+
+            s.instrumentIds = new string[instruments.Count];
+            s.instrumentTypes = new string[instruments.Count];
+            for (int i = 0; i < instruments.Count; i++)
+            {
+                InstrumentController ic = instruments[i];
+                s.instrumentIds[i] = ic != null ? ic.Identity.InstrumentId : "DESTROYED";
+                s.instrumentTypes[i] = ic != null ? SurgiTwinTokens.Token(ic.Identity.Type) : "UNKNOWN";
+            }
+            s.sourceIds = sourceIds.ToArray();
+
+            if (s.samples.Length < count)
+            {
+                s.samples = new TrajectorySample[samples != null ? samples.Length : count];
+            }
+            if (count > 0)
+            {
+                System.Array.Copy(samples, s.samples, count);
+            }
+        }
+
+        /// <summary>
+        /// Writes the "instruments" and "samples" members (with leading comma handling done by caller).
+        /// Touches only the snapshot, so it may run on a worker thread.
+        /// </summary>
+        public static void WriteJson(TextWriter w, Snapshot snap)
+        {
+            JsonText.Key(w, "sampleRateHz"); JsonText.Number(w, snap.sampleRateHz); w.Write(',');
+            JsonText.Key(w, "sampleCount"); JsonText.Number(w, snap.count); w.Write(',');
+            JsonText.Key(w, "bufferOverflow"); JsonText.Bool(w, snap.overflow); w.Write(',');
 
             JsonText.Key(w, "instruments");
             w.Write('[');
-            for (int i = 0; i < instruments.Count; i++)
+            for (int i = 0; i < snap.instrumentIds.Length; i++)
             {
                 if (i > 0) w.Write(',');
-                InstrumentController ic = instruments[i];
                 w.Write('{');
-                JsonText.Key(w, "id"); JsonText.String(w, ic != null ? ic.Identity.InstrumentId : "DESTROYED"); w.Write(',');
-                JsonText.Key(w, "type"); JsonText.String(w, ic != null ? SurgiTwinTokens.Token(ic.Identity.Type) : "UNKNOWN");
+                JsonText.Key(w, "id"); JsonText.String(w, snap.instrumentIds[i]); w.Write(',');
+                JsonText.Key(w, "type"); JsonText.String(w, snap.instrumentTypes[i]);
                 w.Write('}');
             }
             w.Write("],");
 
             JsonText.Key(w, "samples");
             w.Write("[\n");
-            for (int i = 0; i < count; i++)
+            string[] sourceIds = snap.sourceIds;
+            TrajectorySample[] samples = snap.samples;
+            for (int i = 0; i < snap.count; i++)
             {
                 ref TrajectorySample s = ref samples[i];
                 if (i > 0) w.Write(",\n");
-                InstrumentController ic = instruments[s.instrumentIndex];
                 w.Write('{');
                 JsonText.Key(w, "t"); JsonText.Number(w, s.time); w.Write(',');
-                JsonText.Key(w, "instrumentId"); JsonText.String(w, ic != null ? ic.Identity.InstrumentId : "DESTROYED"); w.Write(',');
+                JsonText.Key(w, "instrumentId"); JsonText.String(w, snap.instrumentIds[s.instrumentIndex]); w.Write(',');
                 JsonText.Key(w, "pos"); JsonText.Vector(w, s.position); w.Write(',');
                 JsonText.Key(w, "rot"); JsonText.Quat(w, s.rotation); w.Write(',');
                 JsonText.Key(w, "interactionState"); JsonText.String(w, SurgiTwinTokens.Token(s.instrumentState)); w.Write(',');

@@ -37,7 +37,7 @@ No packages were added, removed, upgraded or downgraded.
 `SurgiTwinScreenshots.cs`, `SurgiTwinAutomation.cs`.
 
 Menu **SurgiTwin → Phase 1**: Build Operating Theatre · Validate Scene · Capture Reference Screenshots ·
-Apply Quest Render Settings · Build Quest APK (Android).
+Apply Quest Render Settings · Build Quest APK (Android) · Set Unique Android Package Name (Phase 1.1).
 
 ### Generated assets
 
@@ -135,7 +135,7 @@ Left/RightShoulder, PH_Left/RightArmVisual, Left/RightHand (glove mesh, Instrume
 * Ring passing detection, patient state transitions and pad tint during real use.
 * Haptic pulse on tissue contact.
 * Controller shortcuts (Y reset, B export, left stick click cycle feed).
-* Log export to `/sdcard/Android/data/<package>/files/SurgiTwinLogs` on pause / quit.
+* Log export to `<persistentDataPath>/SurgiTwinLogs` (`/storage/emulated/<user>/Android/data/com.bdnaturetech.surgitwinxr/files/SurgiTwinLogs`) on B, pause and quit.
 * Runtime frame rate on Quest 3S (no profiling has been done).
 * NPC test commands at runtime (context menu in Play Mode).
 
@@ -159,6 +159,15 @@ Left/RightShoulder, PH_Left/RightArmVisual, Left/RightHand (glove mesh, Instrume
   not registered by the asset database; they were moved to `Simulation/Session/` and `Simulation/Recording/`
   so Unity imported them fresh. No action needed now.
 * The builder **overwrites** its generated prefabs/materials/scene. Stop using it once art is hand-edited.
-* The Android package name is still the URP template default (`com.UnityTechnologies.com.unity.template.urpblank`).
+* **Phase 1.1 changes (2026-11-06)**, each tested on a Quest 3S (see `PHASE_1_1_HEADSET_VALIDATION.md`):
+  * The Android package name is now `com.bdnaturetech.surgitwinxr`. The URP template default was already used by
+    another project on the headset, and the app hung on launch.
+  * `SurgicalSessionManager` copies the session state into a snapshot on the main thread and writes the JSON on a
+    worker thread. It writes `.tmp` and then renames, and queues a repeated export. On pause or quit it waits for
+    the write to finish.
+  * `InstrumentTrajectoryRecorder` sizes its buffer from `capacityMinutes` (default 30) × sample rate × the
+    number of active instruments, instead of a fixed 120 000 samples.
+* The headset sections above ("Implemented, not physically tested") were written before Phase 1.1. The
+  validation report now records them as tested.
 * The automation hook (`SurgiTwinAutomation.cs`) polls a folder outside `Assets`. It is editor-only and can be
   deleted at any time without affecting the project.

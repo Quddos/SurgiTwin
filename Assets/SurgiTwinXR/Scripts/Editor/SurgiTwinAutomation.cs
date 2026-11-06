@@ -11,7 +11,7 @@ namespace SurgiTwinXR.EditorTools
     /// <summary>
     /// Development helper: lets external tools drive the open editor through files in
     /// &lt;project&gt;/SurgiTwinAutomation (outside Assets, never imported).
-    ///   request.txt  one command per line: build | validate | screenshots | quest-render | build-android
+    ///   request.txt  one command per line: build | validate | screenshots | quest-render | build-android | set-android-id
     ///   result.txt   appended results
     ///   heartbeat.txt  written after every successful script compilation / domain reload
     /// Also available as menu items under SurgiTwin > Phase 1.
@@ -99,6 +99,18 @@ namespace SurgiTwinXR.EditorTools
                     return SurgiTwinScreenshots.CaptureAll(Path.Combine(Dir, "shots"));
                 case "build-android":
                     return BuildAndroid();
+                case "set-android-id":
+                    return SetAndroidApplicationId();
+                // Diagnostic variants (Phase 1.1 startup-hang bisect). Each restores every setting it touches.
+                case "build-android-dev":
+                    return BuildAndroidCore(new[] { SurgiTwinPhase1Builder.ScenePath }, "SurgiTwinXR_diag_dev.apk",
+                        BuildOptions.Development | BuildOptions.AllowDebugging, false);
+                case "build-android-gles":
+                    return BuildAndroidCore(new[] { SurgiTwinPhase1Builder.ScenePath }, "SurgiTwinXR_diag_gles.apk",
+                        BuildOptions.None, true);
+                case "build-android-sample":
+                    return BuildAndroidCore(new[] { "Assets/Scenes/SampleScene.unity" }, "SurgiTwinXR_diag_sample.apk",
+                        BuildOptions.None, false);
                 default:
                     return "Unknown command.";
             }
@@ -110,7 +122,34 @@ namespace SurgiTwinXR.EditorTools
             Debug.Log(BuildAndroid());
         }
 
+        /// <summary>
+        /// Phase 1.1 fix: the project still used the URP template's Android package name, which another
+        /// project had already installed on the test headset. The new app inherited that package's external
+        /// storage, IL2CPP could not extract its resources there, and startup stalled on the loading dots.
+        /// </summary>
+        public const string AndroidApplicationId = "com.bdnaturetech.surgitwinxr";
+
+        [MenuItem("SurgiTwin/Phase 1/Set Unique Android Package Name", priority = 41)]
+        static void SetAndroidApplicationIdMenu()
+        {
+            Debug.Log(SetAndroidApplicationId());
+        }
+
+        public static string SetAndroidApplicationId()
+        {
+            var android = UnityEditor.Build.NamedBuildTarget.Android;
+            string before = PlayerSettings.GetApplicationIdentifier(android);
+            PlayerSettings.SetApplicationIdentifier(android, AndroidApplicationId);
+            AssetDatabase.SaveAssets();
+            return $"Android application id: {before} -> {PlayerSettings.GetApplicationIdentifier(android)}";
+        }
+
         public static string BuildAndroid()
+        {
+            return BuildAndroidCore(new[] { SurgiTwinPhase1Builder.ScenePath }, "SurgiTwinXR_Phase1.apk", BuildOptions.None, false);
+        }
+
+        static string BuildAndroidCore(string[] scenes, string apkName, BuildOptions buildOptions, bool glesOnly)
         {
             if (EditorUserBuildSettings.activeBuildTarget != BuildTarget.Android)
             {
@@ -121,13 +160,34 @@ namespace SurgiTwinXR.EditorTools
             Directory.CreateDirectory(outDir);
             var options = new BuildPlayerOptions
             {
-                scenes = new[] { SurgiTwinPhase1Builder.ScenePath },
-                locationPathName = Path.Combine(outDir, "SurgiTwinXR_Phase1.apk"),
+                scenes = scenes,
+                locationPathName = Path.Combine(outDir, apkName),
                 target = BuildTarget.Android,
                 targetGroup = BuildTargetGroup.Android,
-                options = BuildOptions.None
+                options = buildOptions
             };
-            BuildReport report = BuildPipeline.BuildPlayer(options);
+
+            bool savedAutoApi = PlayerSettings.GetUseDefaultGraphicsAPIs(BuildTarget.Android);
+            UnityEngine.Rendering.GraphicsDeviceType[] savedApis = PlayerSettings.GetGraphicsAPIs(BuildTarget.Android);
+            BuildReport report;
+            try
+            {
+                if (glesOnly)
+                {
+                    PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.Android, false);
+                    PlayerSettings.SetGraphicsAPIs(BuildTarget.Android, new[] { UnityEngine.Rendering.GraphicsDeviceType.OpenGLES3 });
+                }
+                report = BuildPipeline.BuildPlayer(options);
+            }
+            finally
+            {
+                if (glesOnly)
+                {
+                    PlayerSettings.SetGraphicsAPIs(BuildTarget.Android, savedApis);
+                    PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.Android, savedAutoApi);
+                    AssetDatabase.SaveAssets();
+                }
+            }
             var s = report.summary;
             var sb = new StringBuilder();
             sb.AppendLine($"Result: {s.result}");

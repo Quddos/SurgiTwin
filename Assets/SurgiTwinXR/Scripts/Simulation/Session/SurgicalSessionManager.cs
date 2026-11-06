@@ -110,7 +110,10 @@ namespace SurgiTwinXR.Simulation
         }
 
         /// <summary>Stops recording and (optionally) exports. Returns the export path or null.</summary>
-        public string EndSession(bool export)
+        public string EndSession(bool export) => EndSession(export, false);
+
+        /// <param name="waitForExport">Block until the export file is written (application quit).</param>
+        public string EndSession(bool export, bool waitForExport)
         {
             if (!running)
             {
@@ -122,7 +125,7 @@ namespace SurgiTwinXR.Simulation
                 recorder.StopRecording();
             }
             Unsubscribe();
-            string path = export ? ExportSession() : null;
+            string path = export ? ExportSession(waitForExport) : null;
             running = false;
             return path;
         }
@@ -226,59 +229,173 @@ namespace SurgiTwinXR.Simulation
 
         // ------------------------------------------------------------------ export
 
-        /// <summary>Writes the current session (so far) to disk. Safe to call repeatedly.</summary>
-        public string ExportSession()
+        /// <summary>Everything the JSON needs, copied on the main thread so a worker can write it.</summary>
+        sealed class ExportSnapshot
+        {
+            public string path;
+            public string sessionId;
+            public DateTime startedUtc;
+            public float durationSeconds;
+            public string device;
+            public string unityVersion;
+            public bool hasTask;
+            public string taskId;
+            public string taskState;
+            public int gatesPassed;
+            public int gateCount;
+            public float progress;
+            public float elapsedSeconds;
+            public string patientState;
+            public readonly List<SessionEvent> events = new List<SessionEvent>(256);
+            public bool hasTrajectory;
+            public readonly InstrumentTrajectoryRecorder.Snapshot trajectory = new InstrumentTrajectoryRecorder.Snapshot();
+        }
+
+        // Phase 1.1 (D2): building and writing the whole JSON on the main thread stalled the headset for up to a
+        // second (19 fps on Quest 3S). Now the main thread only copies a snapshot; a worker formats and writes it.
+        // One export runs at a time; a request made while one is running is queued and runs when it finishes.
+        readonly ExportSnapshot exportSnapshot = new ExportSnapshot();
+        System.Threading.Tasks.Task exportTask;
+        bool exportQueued;
+
+        public bool IsExporting => exportTask != null && !exportTask.IsCompleted;
+
+        /// <summary>
+        /// Writes the current session (so far) to disk on a worker thread. Safe to call repeatedly.
+        /// Returns the destination path (the file is complete once the "Session exported" log line appears).
+        /// </summary>
+        public string ExportSession() => ExportSession(false);
+
+        /// <param name="waitForCompletion">Block until the file is written (used on quit, where a worker may be killed).</param>
+        public string ExportSession(bool waitForCompletion)
         {
             if (sessionId == null)
             {
                 return null;
             }
+            string path = Path.Combine(LogDirectory, sessionId + ".json");
+
+            if (IsExporting)
+            {
+                if (!waitForCompletion)
+                {
+                    exportQueued = true;
+                    return path;
+                }
+                exportTask.Wait();
+            }
+            exportQueued = false;
+
             try
             {
-                Directory.CreateDirectory(LogDirectory);
-                string path = Path.Combine(LogDirectory, sessionId + ".json");
-                using (var writer = new StreamWriter(path, false, new UTF8Encoding(false), 1 << 16))
-                {
-                    WriteJson(writer);
-                }
-                LastExportPath = path;
-                Debug.Log($"[SurgiTwin] Session exported: {path}");
-                return path;
+                CaptureExportSnapshot(exportSnapshot, path);
             }
             catch (Exception e)
             {
                 Debug.LogError($"[SurgiTwin] Session export failed: {e.Message}");
                 return null;
             }
+
+            ExportSnapshot snap = exportSnapshot;
+            exportTask = System.Threading.Tasks.Task.Run(() => WriteSnapshotToDisk(snap));
+            if (waitForCompletion)
+            {
+                exportTask.Wait();
+            }
+            return path;
         }
 
-        void WriteJson(TextWriter w)
+        void Update()
+        {
+            if (exportQueued && !IsExporting)
+            {
+                ExportSession(false);
+            }
+        }
+
+        void CaptureExportSnapshot(ExportSnapshot s, string path)
+        {
+            s.path = path;
+            s.sessionId = sessionId;
+            s.startedUtc = startedUtc;
+            s.durationSeconds = Time.time - startTime;
+            s.device = SystemInfo.deviceModel;
+            s.unityVersion = Application.unityVersion;
+            s.hasTask = task != null;
+            if (s.hasTask)
+            {
+                s.taskId = task.TaskId;
+                s.taskState = SurgiTwinTokens.Token(task.State);
+                s.gatesPassed = task.GatesPassed;
+                s.gateCount = task.GateCount;
+                s.progress = task.Progress;
+                s.elapsedSeconds = task.ElapsedSeconds;
+            }
+            s.patientState = patient != null ? SurgiTwinTokens.Token(patient.State) : "UNKNOWN";
+            s.events.Clear();
+            s.events.AddRange(events);
+            s.hasTrajectory = recorder != null;
+            if (s.hasTrajectory)
+            {
+                recorder.CaptureSnapshot(s.trajectory);
+            }
+        }
+
+        // Worker thread: touches only the snapshot. Debug.Log is thread-safe in Unity.
+        void WriteSnapshotToDisk(ExportSnapshot s)
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(s.path));
+                string tmp = s.path + ".tmp";
+                using (var writer = new StreamWriter(tmp, false, new UTF8Encoding(false), 1 << 16))
+                {
+                    WriteJson(writer, s);
+                }
+                // Replace atomically so a reader never sees a half-written file.
+                if (File.Exists(s.path))
+                {
+                    File.Delete(s.path);
+                }
+                File.Move(tmp, s.path);
+                LastExportPath = s.path;
+                Debug.Log($"[SurgiTwin] Session exported: {s.path} ({s.events.Count} events, "
+                          + $"{(s.hasTrajectory ? s.trajectory.count : 0)} samples)");
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[SurgiTwin] Session export failed: {e.Message}");
+            }
+        }
+
+        static void WriteJson(TextWriter w, ExportSnapshot s)
         {
             w.Write('{');
             JsonText.Key(w, "schema"); JsonText.String(w, SchemaId); w.Write(',');
-            JsonText.Key(w, "sessionId"); JsonText.String(w, sessionId); w.Write(',');
-            JsonText.Key(w, "startedUtc"); JsonText.String(w, startedUtc.ToString("o", CultureInfo.InvariantCulture)); w.Write(',');
-            JsonText.Key(w, "durationSeconds"); JsonText.Number(w, Time.time - startTime); w.Write(',');
-            JsonText.Key(w, "device"); JsonText.String(w, SystemInfo.deviceModel); w.Write(',');
-            JsonText.Key(w, "unityVersion"); JsonText.String(w, Application.unityVersion); w.Write(',');
+            JsonText.Key(w, "sessionId"); JsonText.String(w, s.sessionId); w.Write(',');
+            JsonText.Key(w, "startedUtc"); JsonText.String(w, s.startedUtc.ToString("o", CultureInfo.InvariantCulture)); w.Write(',');
+            JsonText.Key(w, "durationSeconds"); JsonText.Number(w, s.durationSeconds); w.Write(',');
+            JsonText.Key(w, "device"); JsonText.String(w, s.device); w.Write(',');
+            JsonText.Key(w, "unityVersion"); JsonText.String(w, s.unityVersion); w.Write(',');
             JsonText.Key(w, "units"); JsonText.String(w, "metres, unity world space (left-handed, Y up)"); w.Write(',');
 
             w.Write("\"task\":{");
-            if (task != null)
+            if (s.hasTask)
             {
-                JsonText.Key(w, "taskId"); JsonText.String(w, task.TaskId); w.Write(',');
-                JsonText.Key(w, "state"); JsonText.String(w, SurgiTwinTokens.Token(task.State)); w.Write(',');
-                JsonText.Key(w, "gatesPassed"); JsonText.Number(w, task.GatesPassed); w.Write(',');
-                JsonText.Key(w, "gateCount"); JsonText.Number(w, task.GateCount); w.Write(',');
-                JsonText.Key(w, "progress"); JsonText.Number(w, task.Progress); w.Write(',');
-                JsonText.Key(w, "elapsedSeconds"); JsonText.Number(w, task.ElapsedSeconds);
+                JsonText.Key(w, "taskId"); JsonText.String(w, s.taskId); w.Write(',');
+                JsonText.Key(w, "state"); JsonText.String(w, s.taskState); w.Write(',');
+                JsonText.Key(w, "gatesPassed"); JsonText.Number(w, s.gatesPassed); w.Write(',');
+                JsonText.Key(w, "gateCount"); JsonText.Number(w, s.gateCount); w.Write(',');
+                JsonText.Key(w, "progress"); JsonText.Number(w, s.progress); w.Write(',');
+                JsonText.Key(w, "elapsedSeconds"); JsonText.Number(w, s.elapsedSeconds);
             }
             w.Write("},");
 
             JsonText.Key(w, "patientState");
-            JsonText.String(w, patient != null ? SurgiTwinTokens.Token(patient.State) : "UNKNOWN");
+            JsonText.String(w, s.patientState);
             w.Write(',');
 
+            List<SessionEvent> events = s.events;
             w.Write("\"events\":[\n");
             for (int i = 0; i < events.Count; i++)
             {
@@ -294,9 +411,9 @@ namespace SurgiTwinXR.Simulation
             w.Write("\n],");
 
             w.Write("\"trajectory\":{");
-            if (recorder != null)
+            if (s.hasTrajectory)
             {
-                recorder.WriteJson(w);
+                InstrumentTrajectoryRecorder.WriteJson(w, s.trajectory);
             }
             w.Write("}}");
         }
@@ -304,9 +421,10 @@ namespace SurgiTwinXR.Simulation
         void OnApplicationPause(bool paused)
         {
             // Quest pauses the app when the headset is removed: keep a copy on disk.
+            // The app is not rendering while paused, so waiting here costs no frames and guarantees the file.
             if (paused && running && exportOnPauseOrQuit)
             {
-                ExportSession();
+                ExportSession(true);
             }
         }
 
@@ -314,7 +432,11 @@ namespace SurgiTwinXR.Simulation
         {
             if (running && exportOnPauseOrQuit)
             {
-                EndSession(true);
+                EndSession(true, true);
+            }
+            else if (IsExporting)
+            {
+                exportTask.Wait();
             }
         }
     }
