@@ -63,7 +63,7 @@ namespace SurgiTwinXR.EditorTools
 
         // ------------------------------------------------------------------ entry points
 
-        [MenuItem("SurgiTwin/Phase 1/Build Operating Theatre", priority = 1)]
+        [MenuItem("Tools/SurgiTwin XR/Build Operating Theatre", priority = 1)]
         static void BuildMenu()
         {
             string report = BuildAll(true);
@@ -73,7 +73,7 @@ namespace SurgiTwinXR.EditorTools
             Debug.Log(report);
         }
 
-        [MenuItem("SurgiTwin/Phase 1/Apply Quest Render Settings (HDR off, MSAA 4x)", priority = 20)]
+        [MenuItem("Tools/SurgiTwin XR/Apply Quest Render Settings (HDR off, MSAA 4x)", priority = 20)]
         static void QuestRenderMenu()
         {
             Report.Clear();

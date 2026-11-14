@@ -65,12 +65,12 @@ surface transform, not the mesh.
 4. Delete the `PH_…` children under `Handle`, `Shaft` and `Jaws`; drop the handle/shaft mesh under `Handle`,
    the fixed jaw under `Jaws`, the moving jaw under `Jaws/JawUpperPivot` (zero local transform).
 5. Check that `TipPoint` and `GraspPoint` still sit at the jaw tip / jaw centre. Move them if needed.
-6. Save the prefab and run **SurgiTwin → Phase 1 → Validate Scene**.
+6. Save the prefab and run **Tools → SurgiTwin XR → Validate Scene**.
 
 The same procedure applies to the grasper (two jaw pivots), scissors, NPC (head mesh under `Head`, hands under
 `LeftHand` / `RightHand`; the `CameraMount` must stay at eye level) and the patient regions.
 
 ## Do not regenerate after hand-editing
 
-`SurgiTwin → Phase 1 → Build Operating Theatre` **overwrites** the generated prefabs, materials and the scene.
+`Tools → SurgiTwin XR → Build Operating Theatre` **overwrites** the generated prefabs, materials and the scene.
 Once you start replacing art by hand, stop using the builder (or copy the prefabs to a new folder first).

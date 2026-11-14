@@ -32,10 +32,10 @@ namespace SurgiTwinXR.EditorTools
             new View("07_overhead_like", new Vector3(0.25f, 2.75f, -0.75f), new Vector3(0f, 1.15f, -0.05f), 72f)
         };
 
-        [MenuItem("SurgiTwin/Phase 1/Capture Reference Screenshots", priority = 3)]
+        [MenuItem("Tools/SurgiTwin XR/Capture Reference Screenshots", priority = 3)]
         static void Menu()
         {
-            string dir = Path.Combine(Directory.GetParent(Application.dataPath).FullName, "SurgiTwinAutomation", "shots");
+            string dir = Path.Combine(Directory.GetParent(Application.dataPath).FullName, "SurgiTwinScreenshots");
             Debug.Log(CaptureAll(dir));
             EditorUtility.RevealInFinder(dir);
         }

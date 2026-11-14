@@ -28,7 +28,7 @@ namespace SurgiTwinXR.EditorTools
             "label", "headsetCamera", "lookTarget", "testInstrument", "m_Script"
         };
 
-        [MenuItem("SurgiTwin/Phase 1/Validate Scene", priority = 2)]
+        [MenuItem("Tools/SurgiTwin XR/Validate Scene", priority = 2)]
         static void ValidateMenu()
         {
             string report = Validate(out int errors, out int warnings);

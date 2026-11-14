@@ -82,6 +82,68 @@ namespace SurgiTwinXR.EditorTools
             }
         }
 
+        // ------------------------------------------------------------------ Asset Store packaging (dev only)
+
+        const string PackageRoot = "Assets/SurgiTwinXR";
+        const string PackageVersion = "1.0.0";
+
+        /// <summary>
+        /// Lists every asset inside the package root that depends on an asset under Assets/ but outside the root.
+        /// Such references would be missing in a buyer's project. Package-manager assets (Packages/...) are
+        /// declared dependencies and are listed separately as a summary.
+        /// </summary>
+        static string ReportExternalDependencies()
+        {
+            var sb = new StringBuilder();
+            var external = new System.Collections.Generic.SortedDictionary<string, System.Collections.Generic.SortedSet<string>>();
+            var packages = new System.Collections.Generic.SortedSet<string>();
+            string[] guids = AssetDatabase.FindAssets("", new[] { PackageRoot });
+            foreach (string guid in guids)
+            {
+                string path = AssetDatabase.GUIDToAssetPath(guid);
+                if (AssetDatabase.IsValidFolder(path)) continue;
+                foreach (string dep in AssetDatabase.GetDependencies(path, false))
+                {
+                    if (dep == path || dep.StartsWith(PackageRoot + "/", StringComparison.Ordinal)) continue;
+                    if (dep.StartsWith("Packages/", StringComparison.Ordinal))
+                    {
+                        string[] parts = dep.Split('/');
+                        packages.Add(parts.Length > 1 ? parts[1] : dep);
+                        continue;
+                    }
+                    if (!external.TryGetValue(dep, out var users))
+                    {
+                        users = new System.Collections.Generic.SortedSet<string>();
+                        external.Add(dep, users);
+                    }
+                    users.Add(path);
+                }
+            }
+            sb.AppendLine($"Package root {PackageRoot}: {guids.Length} assets scanned.");
+            sb.AppendLine($"Assets outside the root that package assets reference: {external.Count}");
+            foreach (var kv in external)
+            {
+                sb.AppendLine("  " + kv.Key);
+                foreach (string user in kv.Value) sb.AppendLine("      used by " + user);
+            }
+            sb.AppendLine($"Package-manager packages referenced: {packages.Count}");
+            foreach (string p in packages) sb.AppendLine("  " + p);
+            return sb.ToString();
+        }
+
+        static string ExportAssetStorePackage()
+        {
+            string outDir = Path.Combine(Directory.GetParent(Application.dataPath).FullName, "Builds", "AssetStore");
+            Directory.CreateDirectory(outDir);
+            string outPath = Path.Combine(outDir, $"SurgiTwinXR_v{PackageVersion}.unitypackage");
+            // Recurse only: dependencies outside the root (Meta SDK, URP) are NOT bundled; buyers install them.
+            AssetDatabase.ExportPackage(PackageRoot, outPath, ExportPackageOptions.Recurse);
+            var info = new FileInfo(outPath);
+            return info.Exists
+                ? $"Exported {outPath} ({info.Length / 1048576.0:0.00} MB)"
+                : "Export failed: file not written.";
+        }
+
         static string Run(string cmd)
         {
             switch (cmd)
@@ -101,6 +163,10 @@ namespace SurgiTwinXR.EditorTools
                     return BuildAndroid();
                 case "set-android-id":
                     return SetAndroidApplicationId();
+                case "package-deps":
+                    return ReportExternalDependencies();
+                case "export-package":
+                    return ExportAssetStorePackage();
                 // Diagnostic variants (Phase 1.1 startup-hang bisect). Each restores every setting it touches.
                 case "build-android-dev":
                     return BuildAndroidCore(new[] { SurgiTwinPhase1Builder.ScenePath }, "SurgiTwinXR_diag_dev.apk",
@@ -116,7 +182,7 @@ namespace SurgiTwinXR.EditorTools
             }
         }
 
-        [MenuItem("SurgiTwin/Phase 1/Build Quest APK (Android)", priority = 40)]
+        [MenuItem("Tools/SurgiTwin XR/Dev/Build Quest APK (Android)", priority = 40)]
         static void BuildAndroidMenu()
         {
             Debug.Log(BuildAndroid());
@@ -129,7 +195,7 @@ namespace SurgiTwinXR.EditorTools
         /// </summary>
         public const string AndroidApplicationId = "com.bdnaturetech.surgitwinxr";
 
-        [MenuItem("SurgiTwin/Phase 1/Set Unique Android Package Name", priority = 41)]
+        [MenuItem("Tools/SurgiTwin XR/Dev/Set Unique Android Package Name", priority = 41)]
         static void SetAndroidApplicationIdMenu()
         {
             Debug.Log(SetAndroidApplicationId());

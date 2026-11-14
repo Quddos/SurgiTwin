@@ -77,7 +77,32 @@ namespace SurgiTwinXR.Simulation
             sourceIdIndex.Clear();
             InternSource("NONE");
             recording = true;
+            nextStatusLog = StatusLogIntervalSeconds;
+            Debug.Log(string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                "[SurgiTwin] Recorder: capacity {0} samples ({1:0.#} min x 60 x {2:0.#} Hz x {3} instruments), {4:0.0} MB",
+                samples.Length, capacityMinutes, sampleRateHz, instrumentCount,
+                samples.Length * (double)Unity.Collections.LowLevel.Unsafe.UnsafeUtility.SizeOf<TrajectorySample>() / 1048576.0));
             SampleAll();
+        }
+
+        // Phase 1.1 measurement (Task 2): one status line per minute for long-duration tests (one string per minute).
+        const float StatusLogIntervalSeconds = 60f;
+        float nextStatusLog;
+
+        void LogStatusIfDue()
+        {
+            float t = Time.time - startTime;
+            if (t < nextStatusLog)
+            {
+                return;
+            }
+            nextStatusLog += StatusLogIntervalSeconds;
+            Debug.Log(string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                "[SurgiTwin] Recorder status: t={0:0}s samples={1}/{2} ({3:0.0}%) rate={4:0.0}/s overflow={5} "
+                + "monoUsedMB={6:0.0} totalAllocatedMB={7:0.0}",
+                t, count, samples.Length, 100.0 * count / samples.Length, t > 0f ? count / t : 0f, overflowWarned,
+                UnityEngine.Profiling.Profiler.GetMonoUsedSizeLong() / 1048576.0,
+                UnityEngine.Profiling.Profiler.GetTotalAllocatedMemoryLong() / 1048576.0));
         }
 
         public void StopRecording()
@@ -91,6 +116,7 @@ namespace SurgiTwinXR.Simulation
             {
                 return;
             }
+            LogStatusIfDue();
             accumulator += Time.deltaTime;
             float interval = 1f / sampleRateHz;
             if (accumulator < interval)

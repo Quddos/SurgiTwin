@@ -36,6 +36,11 @@ namespace SurgiTwinXR.Simulation
         [SerializeField] bool exportOnPauseOrQuit = true;
         [SerializeField] string logFolderName = "SurgiTwinLogs";
         [SerializeField] int maxEvents = 4096;
+        [Tooltip("Android only: after each export, also copy the JSON to the device's shared Downloads/<subfolder> "
+                 + "through MediaStore, so it can be pulled over ADB even when the headset's signed-in user is not "
+                 + "user 0. The file stays on the device; nothing is uploaded.")]
+        [SerializeField] bool publishToDownloads = true;
+        [SerializeField] string downloadsSubfolder = "SurgiTwinLogs";
 
         [Header("Systems")]
         [SerializeField] PatientStateController patient;
@@ -50,6 +55,7 @@ namespace SurgiTwinXR.Simulation
         DateTime startedUtc;
         float startTime;
         bool running;
+        int eventsDropped;
 
         public string SessionId => sessionId;
         public bool IsRunning => running;
@@ -79,6 +85,10 @@ namespace SurgiTwinXR.Simulation
 
         void Start()
         {
+            if (publishToDownloads)
+            {
+                SessionFilePublisher.Initialize();
+            }
             if (autoStartSession)
             {
                 StartSession();
@@ -98,6 +108,7 @@ namespace SurgiTwinXR.Simulation
             sessionId = "ST_" + startedUtc.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
             startTime = Time.time;
             events.Clear();
+            eventsDropped = 0;
             running = true;
 
             Subscribe();
@@ -132,8 +143,17 @@ namespace SurgiTwinXR.Simulation
 
         public void LogEvent(string type, string subject, string detail)
         {
-            if (!running || events.Count >= maxEvents)
+            if (!running)
             {
+                return;
+            }
+            if (events.Count >= maxEvents)
+            {
+                // Phase 1.1: never drop silently. The count is exported as "eventsDropped".
+                if (eventsDropped++ == 0)
+                {
+                    Debug.LogWarning($"[SurgiTwin] Session event log full ({maxEvents}); further events are counted but not stored.");
+                }
                 return;
             }
             events.Add(new SessionEvent { time = Time.time - startTime, type = type, subject = subject, detail = detail });
@@ -247,8 +267,14 @@ namespace SurgiTwinXR.Simulation
             public float elapsedSeconds;
             public string patientState;
             public readonly List<SessionEvent> events = new List<SessionEvent>(256);
+            public int eventsDropped;
             public bool hasTrajectory;
             public readonly InstrumentTrajectoryRecorder.Snapshot trajectory = new InstrumentTrajectoryRecorder.Snapshot();
+
+            // Phase 1.1 measurement (Task 3): timings reported in the "Export timing" log line.
+            public System.Diagnostics.Stopwatch totalTimer;
+            public double snapshotMs;
+            public int frameRequested;
         }
 
         // Phase 1.1 (D2): building and writing the whole JSON on the main thread stalled the headset for up to a
@@ -286,9 +312,14 @@ namespace SurgiTwinXR.Simulation
             }
             exportQueued = false;
 
+            var timer = System.Diagnostics.Stopwatch.StartNew();
             try
             {
                 CaptureExportSnapshot(exportSnapshot, path);
+                exportSnapshot.totalTimer = timer;
+                exportSnapshot.snapshotMs = timer.Elapsed.TotalMilliseconds;
+                exportSnapshot.frameRequested = Time.frameCount;
+                BeginExportFrameWatch();
             }
             catch (Exception e)
             {
@@ -307,9 +338,49 @@ namespace SurgiTwinXR.Simulation
 
         void Update()
         {
+            UpdateExportFrameWatch();
             if (exportQueued && !IsExporting)
             {
                 ExportSession(false);
+            }
+        }
+
+        // Phase 1.1 measurement (Task 3): VrApi reports once per second, so watch individual frames from the export
+        // request (including the frame that took the snapshot) for 2 s and log the slowest frame.
+        const float FrameWatchSeconds = 2f;
+        const float SlowFrameMs = 20f; // > 1.4 x the 13.9 ms budget at 72 Hz
+        bool frameWatchActive;
+        float frameWatchEnd;
+        float frameWatchMaxMs;
+        int frameWatchFrames;
+        int frameWatchSlow;
+
+        void BeginExportFrameWatch()
+        {
+            frameWatchActive = true;
+            frameWatchEnd = Time.unscaledTime + FrameWatchSeconds;
+            frameWatchMaxMs = 0f;
+            frameWatchFrames = 0;
+            frameWatchSlow = 0;
+        }
+
+        void UpdateExportFrameWatch()
+        {
+            if (!frameWatchActive)
+            {
+                return;
+            }
+            float ms = Time.unscaledDeltaTime * 1000f;
+            frameWatchFrames++;
+            if (ms > frameWatchMaxMs) frameWatchMaxMs = ms;
+            if (ms > SlowFrameMs) frameWatchSlow++;
+            if (Time.unscaledTime >= frameWatchEnd)
+            {
+                frameWatchActive = false;
+                Debug.Log("[SurgiTwin] Export frame check: " + frameWatchFrames + " frames in "
+                          + FrameWatchSeconds.ToString("0", CultureInfo.InvariantCulture) + " s, max "
+                          + frameWatchMaxMs.ToString("0.0", CultureInfo.InvariantCulture) + " ms, "
+                          + frameWatchSlow + " over " + SlowFrameMs.ToString("0", CultureInfo.InvariantCulture) + " ms");
             }
         }
 
@@ -334,6 +405,7 @@ namespace SurgiTwinXR.Simulation
             s.patientState = patient != null ? SurgiTwinTokens.Token(patient.State) : "UNKNOWN";
             s.events.Clear();
             s.events.AddRange(events);
+            s.eventsDropped = eventsDropped;
             s.hasTrajectory = recorder != null;
             if (s.hasTrajectory)
             {
@@ -346,21 +418,55 @@ namespace SurgiTwinXR.Simulation
         {
             try
             {
+                var worker = System.Diagnostics.Stopwatch.StartNew();
+                int gcBefore = GC.CollectionCount(0);
+                long heapBefore = GC.GetTotalMemory(false);
+
                 Directory.CreateDirectory(Path.GetDirectoryName(s.path));
                 string tmp = s.path + ".tmp";
-                using (var writer = new StreamWriter(tmp, false, new UTF8Encoding(false), 1 << 16))
+                long bytes;
+                double ioMs;
+                using (var file = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16))
+                using (var timed = new TimedWriteStream(file))
                 {
-                    WriteJson(writer, s);
+                    using (var writer = new StreamWriter(timed, new UTF8Encoding(false), 1 << 16, true))
+                    {
+                        WriteJson(writer, s);
+                    }
+                    bytes = timed.BytesWritten;
+                    ioMs = timed.WriteMilliseconds;
                 }
+                double serializeAndWriteMs = worker.Elapsed.TotalMilliseconds;
+
                 // Replace atomically so a reader never sees a half-written file.
                 if (File.Exists(s.path))
                 {
                     File.Delete(s.path);
                 }
                 File.Move(tmp, s.path);
+                double renameMs = worker.Elapsed.TotalMilliseconds - serializeAndWriteMs;
                 LastExportPath = s.path;
-                Debug.Log($"[SurgiTwin] Session exported: {s.path} ({s.events.Count} events, "
-                          + $"{(s.hasTrajectory ? s.trajectory.count : 0)} samples)");
+
+                int samples = s.hasTrajectory ? s.trajectory.count : 0;
+                Debug.Log($"[SurgiTwin] Session exported: {s.path} ({s.events.Count} events, {samples} samples)");
+
+                double publishStart = worker.Elapsed.TotalMilliseconds;
+                string published = publishToDownloads ? SessionFilePublisher.Publish(s.path, s.sessionId, downloadsSubfolder) : null;
+                double publishMs = worker.Elapsed.TotalMilliseconds - publishStart;
+                if (published != null)
+                {
+                    Debug.Log($"[SurgiTwin] Session copied to shared storage: {published}");
+                }
+
+                Debug.Log(string.Format(CultureInfo.InvariantCulture,
+                    "[SurgiTwin] Export timing: samples={0} events={1} bytes={2} mainThreadSnapshotMs={3:0.00} "
+                    + "serializeMs={4:0.0} fileWriteMs={5:0.0} renameMs={6:0.0} publishMs={7:0.0} totalMs={8:0.0} "
+                    + "gen0Collections={9} managedHeapMB before={10:0.0} after={11:0.0} requestFrame={12}",
+                    samples, s.events.Count, bytes, s.snapshotMs,
+                    serializeAndWriteMs - ioMs, ioMs, renameMs, publishMs,
+                    s.totalTimer != null ? s.totalTimer.Elapsed.TotalMilliseconds : -1.0,
+                    GC.CollectionCount(0) - gcBefore, heapBefore / 1048576.0, GC.GetTotalMemory(false) / 1048576.0,
+                    s.frameRequested));
             }
             catch (Exception e)
             {
@@ -394,6 +500,8 @@ namespace SurgiTwinXR.Simulation
             JsonText.Key(w, "patientState");
             JsonText.String(w, s.patientState);
             w.Write(',');
+
+            JsonText.Key(w, "eventsDropped"); JsonText.Number(w, s.eventsDropped); w.Write(',');
 
             List<SessionEvent> events = s.events;
             w.Write("\"events\":[\n");

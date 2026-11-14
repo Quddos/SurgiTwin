@@ -1,13 +1,15 @@
-# SurgiTwin-XR — Phase 1 Architecture
+# SurgiTwin-XR — Architecture (v1.0)
 
-## Goals of the Phase 1 architecture
+Start with `README.md` for setup. This document explains how the framework is built and where to extend it.
+
+## Design goals
 
 * A Quest 3S operating theatre where a trainee holds laparoscopic instruments with Touch controllers.
 * **One instrument controller per instrument**, driven through an interface by either the human (XR) or
   the NPC (scripted now, a learned policy later). No instrument code knows who is driving it.
 * Patient and task state machines that produce clean, structured, JSON-exportable logs.
 * Three independently addressable observation cameras (no streaming yet).
-* Nothing fake: the NPC does nothing unless commanded; no VLM / VLA / cloud / WebRTC in Phase 1.
+* Nothing fake: the NPC does nothing unless commanded; no AI model, cloud service or streaming in v1.0.
 
 ## Folder layout (`Assets/SurgiTwinXR`)
 
@@ -22,17 +24,20 @@ Scripts/
   Instruments/  IInstrumentControl / IInstrumentControlSource, InstrumentController, InstrumentIdentity,
                 InstrumentTip, InstrumentJawVisual, NeedleBody, NeedleGrasp, SutureThreadVisual, InstrumentDefinition
   Interaction/  (reserved; XR-specific interaction lives in XR/)
-  Simulation/   SurgicalSessionManager, SurgicalTaskController, NeedleGate, NeedlePassingTaskConfig,
-                TissueInteractionController, SurgicalWorkspaceController, InstrumentTrajectoryRecorder, TaskProgressDisplay
+  Simulation/   SurgicalTaskController, NeedleGate, NeedlePassingTaskConfig, TissueInteractionController,
+                SurgicalWorkspaceController, TaskProgressDisplay
+    Session/    SurgicalSessionManager, SessionFilePublisher (Android shared-storage copy), TimedWriteStream
+    Recording/  InstrumentTrajectoryRecorder
   XR/           HumanXRInstrumentInput, SessionInputShortcuts, XRRuntimeStatus
   Cameras/      ObservationCamera, SurgicalCameraManager, MonitorFeedDisplay
   NPC/          NPCRig, INPCController, NPCManualController, NPCHandInstrumentDriver
   Utilities/    JsonText, ProceduralMeshes, PlaceholderMarker
-  Editor/       SurgiTwinPhase1Builder (+Util), SurgiTwinPhase1Validator, SurgiTwinScreenshots, SurgiTwinAutomation
+  Editor/       SurgiTwinPhase1Builder (+Util), SurgiTwinPhase1Validator, SurgiTwinScreenshots
 ScriptableObjects/  InstrumentDefinition assets, NeedlePassingTaskConfig
-Settings/       (reserved for SurgiTwin-specific settings assets)
 Documentation/  this folder
 ```
+
+All code is in the `SurgiTwinXR.*` namespaces. Editor tools are under **Tools → SurgiTwin XR**.
 
 No assembly definitions: runtime code compiles into `Assembly-CSharp`, editor code into
 `Assembly-CSharp-Editor`. The Meta assemblies are auto-referenced (verified).
@@ -75,7 +80,7 @@ Plus Pelvis, Legs and Drapes. Each region carries an `AnatomyRegion` label.
 | Input | Fed by |
 |---|---|
 | target selected | `SurgicalTargetArea` (instrument tip inside the approach volume) |
-| instrument contact | `TissueInteractionController` (tip within 3 mm of the tissue surface) |
+| instrument contact | `TissueInteractionController` (tip within 3 mm of the tissue surface). A tip counts as having left the zone only when its collider no longer overlaps it (`Physics.ComputePenetration`), because toggling a Rigidbody's `isKinematic` (as lodging a needle does) makes Unity send a spurious trigger exit/enter |
 | tissue interaction | `TissueInteractionController` (tip ≥ 4 mm deep, or needle tip below the surface) |
 | task completed | `SurgicalTaskController` |
 
@@ -90,10 +95,22 @@ is tinted per state (MaterialPropertyBlock).
 * `NeedleGate`: segment/plane test of the needle tip against the ring plane each frame (no physics triggers,
   no missed fast passes).
 * `SurgicalWorkspaceController`: oriented box around the operative field; logs tip enter/exit.
-* `InstrumentTrajectoryRecorder`: 30 Hz, pre-allocated `TrajectorySample[]` (120 000 samples ≈ 16 min for
-  4 instruments). Zero heap allocation per sample.
-* `SurgicalSessionManager`: session id `ST_yyyyMMdd_HHmmss`, event log, JSON export to
-  `Application.persistentDataPath/SurgiTwinLogs/<sessionId>.json`, also on app pause (headset removed) and quit.
+* `InstrumentTrajectoryRecorder`: 30 Hz, pre-allocated `TrajectorySample[]` sized when recording starts:
+  `capacityMinutes` (default 30) × 60 × `sampleRateHz` × active instruments. The demo scene's 5 instruments give
+  270 000 samples (12.4 MB). Zero heap allocation per sample; at most one sample per frame. When the buffer is
+  full, further samples are dropped with one warning and `bufferOverflow: true` in the JSON. One status line per
+  minute is logged (`[SurgiTwin] Recorder status: …`).
+* `SurgicalSessionManager`: session id `ST_yyyyMMdd_HHmmss`, event log (capped at `maxEvents`, default 4096;
+  extra events are counted in `eventsDropped` and warned about once), JSON export to
+  `Application.persistentDataPath/SurgiTwinLogs/<sessionId>.json` on **B**, on app pause (headset removed) and on quit.
+  * Export pipeline: the main thread copies the session into a plain-data snapshot (one `Array.Copy`; measured
+    0.6 ms for 145 000 samples on Quest 3S), then a worker thread formats and writes the JSON (`.tmp`, then rename).
+    A second request while one is running is queued. On pause and quit the export completes before returning.
+  * Each export logs `[SurgiTwin] Export timing: …` (snapshot, serialize, file write, total ms, GC count) and
+    `[SurgiTwin] Export frame check: …` (slowest frame in the 2 s after the request).
+  * Android: `SessionFilePublisher` also copies the file to the device's shared `Download/SurgiTwinLogs/` through
+    MediaStore (no permission needed). That copy can be pulled over USB even when the headset's signed-in Android
+    user is not user 0 — see README "Getting session files off the headset". Turn off with `publishToDownloads`.
 
 ### JSON schema `surgitwin.phase1.session/1`
 
@@ -106,6 +123,7 @@ is tinted per state (MaterialPropertyBlock).
   "task": { "taskId": "NEEDLE_PASSING_01", "state": "COMPLETED", "gatesPassed": 4, "gateCount": 4,
             "progress": 1, "elapsedSeconds": 48.2 },
   "patientState": "TASK_COMPLETED",
+  "eventsDropped": 0,
   "events": [ { "t": 3.21, "type": "CONTROL_ACQUIRED", "subject": "NEEDLE_HOLDER_01", "detail": "HUMAN_XR:HUMAN_XR_RIGHT" } ],
   "trajectory": {
     "sampleRateHz": 30, "sampleCount": 9000, "bufferOverflow": false,
@@ -131,7 +149,7 @@ Event types: `SESSION_STARTED/ENDED`, `PATIENT_STATE`, `TASK_STATE`, `GATE_PASSE
 
 `SurgicalCameraManager.StartFeed(role)` returns a RenderTexture (640×360, 15 Hz by default: the camera
 is enabled for one frame per interval). Feeds are off unless requested; the theatre monitor requests
-`NPC_POV`. Phase 2 can hand these textures to a streaming layer without touching the cameras.
+`NPC_POV`. A streaming layer can consume these textures without touching the cameras.
 
 ## NPC
 

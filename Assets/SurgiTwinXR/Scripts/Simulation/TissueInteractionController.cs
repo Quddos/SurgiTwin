@@ -20,6 +20,7 @@ namespace SurgiTwinXR.Simulation
         struct TipTrack
         {
             public InstrumentTip tip;
+            public Collider collider;
             public NeedleBody needle;
             public bool contact;
             public bool interacting;
@@ -46,6 +47,13 @@ namespace SurgiTwinXR.Simulation
             return Vector3.Dot(s.position - worldPoint, s.up);
         }
 
+        Collider zone;
+
+        void Awake()
+        {
+            zone = GetComponent<Collider>();
+        }
+
         void OnTriggerEnter(Collider other)
         {
             var tip = other.GetComponent<InstrumentTip>();
@@ -54,9 +62,15 @@ namespace SurgiTwinXR.Simulation
                 return;
             }
             NeedleBody needle = tip.IsNeedleTip && tip.Owner != null ? tip.Owner.GetComponent<NeedleBody>() : null;
-            tracks.Add(new TipTrack { tip = tip, needle = needle });
+            tracks.Add(new TipTrack { tip = tip, collider = other, needle = needle });
         }
 
+        // Phase 1.1 (D4): changing Rigidbody.isKinematic re-registers the body with the physics scene, which makes
+        // Unity send OnTriggerExit + OnTriggerEnter even though nothing moved. Lodging a needle sets it kinematic,
+        // so the spurious exit un-lodged it (non-kinematic), which fired another exit/enter pair, every physics
+        // step: the patient state flickered each frame (~1 500 events/min) while a needle sat in the pad.
+        // Exits are therefore only trusted when the tip really no longer overlaps the zone; Update() removes tips
+        // that have left geometrically, so a dropped exit message cannot leave a stale track either.
         void OnTriggerExit(Collider other)
         {
             var tip = other.GetComponent<InstrumentTip>();
@@ -65,10 +79,22 @@ namespace SurgiTwinXR.Simulation
                 return;
             }
             int i = IndexOf(tip);
-            if (i >= 0)
+            if (i >= 0 && !StillOverlapping(tracks[i]))
             {
                 RemoveAt(i);
             }
+        }
+
+        bool StillOverlapping(TipTrack t)
+        {
+            Collider c = t.collider;
+            if (zone == null || c == null || !c.enabled || !c.gameObject.activeInHierarchy)
+            {
+                return false;
+            }
+            Transform a = c.transform;
+            Transform b = zone.transform;
+            return Physics.ComputePenetration(c, a.position, a.rotation, zone, b.position, b.rotation, out _, out _);
         }
 
         void Update()
@@ -76,7 +102,7 @@ namespace SurgiTwinXR.Simulation
             for (int i = tracks.Count - 1; i >= 0; i--)
             {
                 TipTrack t = tracks[i];
-                if (t.tip == null || !t.tip.isActiveAndEnabled || t.tip.Owner == null)
+                if (t.tip == null || !t.tip.isActiveAndEnabled || t.tip.Owner == null || !StillOverlapping(t))
                 {
                     RemoveAt(i);
                     continue;

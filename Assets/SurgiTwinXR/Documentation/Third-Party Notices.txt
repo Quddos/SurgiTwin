@@ -1,0 +1,28 @@
+SurgiTwin XR - Third-Party Notices
+==================================
+
+This package does NOT include any third-party code, models, textures or audio.
+All scripts, materials, prefabs and procedural meshes in Assets/SurgiTwinXR were
+created for this package and are distributed under the Unity Asset Store EULA.
+
+The package REQUIRES the following packages, which you install separately and
+which are governed by their own licenses:
+
+1. Meta XR All-in-One SDK (com.meta.xr.sdk.all), version 207.x
+   Publisher: Meta Platforms Technologies, LLC
+   License:   Meta Platform Technologies SDK License Agreement
+              (shown when you install the SDK; see developers.meta.com/horizon/licenses/)
+   Used for:  OVRCameraRig, OVRInput, Interaction SDK (Grabbable, GrabInteractable,
+              HandGrabInteractable), Meta Quest OpenXR features.
+
+2. OpenXR Plugin (com.unity.xr.openxr), version 1.16.x
+   Publisher: Unity Technologies
+   License:   Unity Companion License
+
+3. Input System (com.unity.inputsystem), version 1.19.x
+   Publisher: Unity Technologies
+   License:   Unity Companion License
+
+4. Universal Render Pipeline (com.unity.render-pipelines.universal), version 17.x
+   Publisher: Unity Technologies
+   License:   Unity Companion License

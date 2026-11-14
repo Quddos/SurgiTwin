@@ -9,7 +9,7 @@ Only results that were actually observed are marked PASS or FAIL. Raw logs: `Sur
 | Item | Result |
 |---|---|
 | ADB | Unity 6000.3.15f1 bundled `platform-tools/adb.exe`, version 36.0.0 |
-| Device | `340YC20G7Q0CR1`, model **Quest 3S** (`panther`), USB, authorised |
+| Device | (serial redacted), model **Quest 3S** (`panther`), USB, authorised |
 | OS | Android 14 (SDK 34), Meta Horizon OS build 207, OVR OS API 160 |
 | Battery / temp at start | 45 %, charging, 32.0 °C |
 | APK install (`SurgiTwinXR_Phase1.apk`, 17:33 build) | **PASS** — `adb install -r` → Success |
