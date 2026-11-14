@@ -28,14 +28,14 @@
 ## Media
 
 * **Cover image:** `Docs/Showcase/cover-630x500.png`
-* **Gameplay video or trailer:** your YouTube link (see the guide)
-* **Screenshots** (upload in this order):
-  1. `04-operating-theatre.png`
-  2. `01-trainee-view.png`
-  3. `02-operative-field.png`
-  4. `03-instrument-tray.png`
-  5. `06-monitor-feeds.png`
-  6. `05-npc-instructor.png`
+* **Gameplay video or trailer:** the YouTube link of `Media/SurgiTwinXR_highlights.mp4` (1 min 42 s, recorded on Quest 3S)
+* **Screenshots** (upload in this order; the first four are real Quest 3S captures from `Media/stills/`):
+  1. `headset-instruments.png` (two instruments over the ring drill)
+  2. `headset-instructor-monitor.png` (instructor and monitor showing *Task COMPLETED, 4/4 rings*)
+  3. `headset-operative-field.png`
+  4. `headset-theatre.png`
+  5. `04-operating-theatre.png`
+  6. `06-monitor-feeds.png`
   7. `07-overhead-view.png`
 
 ---

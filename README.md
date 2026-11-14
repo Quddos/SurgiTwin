@@ -9,7 +9,7 @@ Touch controllers and practises a needle-passing drill. Every movement is record
 file for analysis. The project is designed as a framework: any driver can control the same instruments, whether
 the trainee, a scripted NPC instructor or, later, a learned policy.
 
-**▶ Demo video:** _coming soon_ · **⬇ Download:** [Releases](../../releases) · **🎮 itch.io:** _coming soon_
+**▶ Demo video:** [YouTube](https://youtu.be/yHMeXCzPlD0) · **⬇ Download:** [Releases](../../releases) · **🎮 itch.io:** [quddosr.itch.io/surgitwin-xr](https://quddosr.itch.io/surgitwin-xr)
 
 ---
 
